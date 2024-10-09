@@ -26,9 +26,14 @@
 #include "util/logging.h"
 #include "util/platform.h"
 #include <cstring>
+#include <perfetto.h>
+
+PERFETTO_DEFINE_CATEGORIES(perfetto::Category("GFXR").SetDescription("Events from the graphics subsystem"));
 
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(util)
+
+static const int PERFETTO_TRACK_ID = 1234561;
 
 FileOutputStream::FileOutputStream(const std::string& filename, size_t buffer_size, bool append) :
     file_(nullptr), own_file_(true), filename(filename)
@@ -72,12 +77,25 @@ void FileOutputStream::Reset(FILE* file)
 
 bool FileOutputStream::Write(const void* data, size_t len)
 {
-    return platform::FileWrite(data, len, file_);
+    TRACE_EVENT_BEGIN("GFXR", "File::Write", perfetto::Track(PERFETTO_TRACK_ID));
+    bool ans = platform::FileWrite(data, len, file_);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+    return ans;
 }
 
 bool FileNoLockOutputStream::Write(const void* data, size_t len)
 {
-    return platform::FileWriteNoLock(data, len, file_);
+    TRACE_EVENT_BEGIN("GFXR", "FileNoLock::Write", perfetto::Track(PERFETTO_TRACK_ID));
+    bool ans = platform::FileWriteNoLock(data, len, file_);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+    return ans;
+}
+
+void FileOutputStream::Flush()
+{
+    TRACE_EVENT_BEGIN("GFXR", "File::Flush", perfetto::Track(PERFETTO_TRACK_ID));
+    platform::FileFlush(file_);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 }
 
 GFXRECON_END_NAMESPACE(util)

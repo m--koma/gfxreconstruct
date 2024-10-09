@@ -57,7 +57,7 @@ class FileOutputStream : public OutputStream
 
     virtual bool Write(const void* data, size_t len) override;
 
-    virtual void Flush() override { platform::FileFlush(file_); }
+    virtual void Flush() override;
 
     virtual int64_t GetOffset() const { return platform::FileTell(file_); }
 

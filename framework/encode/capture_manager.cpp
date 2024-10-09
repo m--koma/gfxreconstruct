@@ -43,18 +43,26 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <format>
+#include <iomanip>
 #include <unordered_map>
+#include <perfetto.h>
 
 #if defined(__unix__)
 extern char** environ;
 #endif
 
+PERFETTO_DEFINE_CATEGORIES(perfetto::Category("GFXR").SetDescription("Events from the graphics subsystem"));
+
+// PERFETTO_TRACK_EVENT_STATIC_STORAGE();
+
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(encode)
 
 // One based frame count.
-const uint32_t kFirstFrame           = 1;
-const size_t   kFileStreamBufferSize = 256 * 1024;
+const uint32_t   kFirstFrame           = 1;
+const size_t     kFileStreamBufferSize = 256 * 1024;
+static const int PERFETTO_TRACK_ID     = 1234561;
 
 std::mutex                                     CommonCaptureManager::ThreadData::count_lock_;
 format::ThreadId                               CommonCaptureManager::ThreadData::thread_count_ = 0;
@@ -110,12 +118,34 @@ CommonCaptureManager::CommonCaptureManager() :
     write_assets_(false), previous_write_assets_(false), write_state_files_(false)
 {}
 
+ParameterEncoder* CommonCaptureManager::BeginTrackedApiCallCapture(format::ApiCallId call_id)
+{
+    std::string tag     = "BeginTrackedApiCallCapture 0x" + std::to_string(static_cast<uint16_t>(call_id));
+    char*       charTag = new char[tag.length() + 1];
+    strcpy(charTag, tag.c_str());
+    if (capture_mode_ != kModeDisabled)
+    {
+        // These are potentially interesting as rather fine-grained traces.
+        // TRACE_EVENT_BEGIN("GFXR", charTag, perfetto::Track(1234561));
+        ParameterEncoder* ans = InitApiCallCapture(call_id);
+        // TRACE_EVENT_END("GFXR");
+        return ans;
+    }
+
+    return nullptr;
+}
+
 CommonCaptureManager::~CommonCaptureManager()
 {
     if (memory_tracking_mode_ == CaptureSettings::MemoryTrackingMode::kPageGuard ||
         memory_tracking_mode_ == CaptureSettings::MemoryTrackingMode::kUserfaultfd)
     {
         util::PageGuardManager::Destroy();
+    }
+
+    if (perfetto::Tracing::IsInitialized())
+    {
+        // TODO: appropriately flush events and shit down Perfetto.
     }
 
     util::Log::Release();
@@ -771,6 +801,7 @@ void CommonCaptureManager::CheckStartCaptureForTrackMode(format::ApiFamilyId api
 {
     if (!trim_ranges_.empty())
     {
+        TRACE_EVENT_BEGIN("GFXR", "!trim_ranges_.empty() branch", perfetto::Track(PERFETTO_TRACK_ID));
         if (current_boundary_count == trim_ranges_[trim_current_range_].first)
         {
             const auto& trim_range = trim_ranges_[trim_current_range_];
@@ -786,16 +817,22 @@ void CommonCaptureManager::CheckStartCaptureForTrackMode(format::ApiFamilyId api
                 capture_mode_ = kModeDisabled;
             }
         }
+        TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
     }
     else if (IsTrimHotkeyPressed() || RuntimeTriggerEnabled())
     {
+        TRACE_EVENT_BEGIN("GFXR", "CreateCaptureFile", perfetto::Track(PERFETTO_TRACK_ID));
         bool success =
             CreateCaptureFile(api_family, util::filepath::InsertFilenamePostfix(base_filename_, "_trim_trigger"));
+        TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
         if (success)
         {
+            TRACE_EVENT_BEGIN("GFXR", "ActivateTrimming", perfetto::Track(PERFETTO_TRACK_ID));
 
             trim_key_first_frame_ = current_boundary_count;
             ActivateTrimming();
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
         else
         {
@@ -808,6 +845,8 @@ void CommonCaptureManager::CheckStartCaptureForTrackMode(format::ApiFamilyId api
     // Check to see if an asset dumping has been requested outside of capture range
     if (use_asset_file_ && (RuntimeWriteAssetsEnabled() || write_assets_) && capture_mode_ == kModeTrack)
     {
+
+        TRACE_EVENT_BEGIN("GFXR", "RuntimeWriteAssetsEnabled() branch", perfetto::Track(PERFETTO_TRACK_ID));
         capture_mode_ |= kModeWrite;
 
         auto thread_data = GetThreadData();
@@ -825,6 +864,7 @@ void CommonCaptureManager::CheckStartCaptureForTrackMode(format::ApiFamilyId api
 
         capture_mode_ = kModeTrack;
         write_assets_ = false;
+        TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
     }
 }
 
@@ -873,7 +913,9 @@ void CommonCaptureManager::WriteFrameMarker(format::MarkerType marker_type)
 void CommonCaptureManager::EndFrame(format::ApiFamilyId api_family)
 {
     // Write an end-of-frame marker to the capture file.
+    TRACE_EVENT_BEGIN("GFXR", "WriteFrameMarker", perfetto::Track(PERFETTO_TRACK_ID));
     WriteFrameMarker(format::MarkerType::kEndMarker);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
     ++current_frame_;
 
@@ -883,25 +925,33 @@ void CommonCaptureManager::EndFrame(format::ApiFamilyId api_family)
         {
             // Currently capturing a frame range.
             // Check for end of range or hotkey trigger to stop capture.
+            TRACE_EVENT_BEGIN("GFXR", "CheckContinueCaptureForWriteMode", perfetto::Track(PERFETTO_TRACK_ID));
             CheckContinueCaptureForWriteMode(api_family, current_frame_);
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
         else if ((capture_mode_ & kModeTrack) == kModeTrack)
         {
             // Capture is not active.
             // Check for start of capture frame range or hotkey trigger to start capture
+            TRACE_EVENT_BEGIN("GFXR", "CheckStartCaptureForTrackMode", perfetto::Track(PERFETTO_TRACK_ID));
             CheckStartCaptureForTrackMode(api_family, current_frame_);
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
     }
 
     if (IsCaptureModeWrite() && write_state_files_)
     {
+        TRACE_EVENT_BEGIN("GFXR", "WriteFrameStateFile", perfetto::Track(PERFETTO_TRACK_ID));
         WriteFrameStateFile();
+        TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
     }
 
     // Flush after presents to help avoid capture files with incomplete final blocks.
     if (file_stream_.get() != nullptr)
     {
+        TRACE_EVENT_BEGIN("GFXR", "file_stream_->Flush", perfetto::Track(PERFETTO_TRACK_ID));
         file_stream_->Flush();
+        TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
     }
 
     // Terminate process if this was the last trim range and the user has asked to do so
@@ -1156,15 +1206,19 @@ void CommonCaptureManager::ActivateTrimming()
 {
     capture_mode_ |= kModeWrite;
 
+    TRACE_EVENT_BEGIN("GFXR", "GetThreadData", perfetto::Track(PERFETTO_TRACK_ID));
     auto thread_data = GetThreadData();
     assert(thread_data != nullptr);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
     if (!write_state_files_)
     {
         for (auto& manager : api_capture_managers_)
         {
+            TRACE_EVENT_BEGIN("GFXR", "WriteTrackedState", perfetto::Track(PERFETTO_TRACK_ID));
             manager.first->WriteTrackedState(
                 file_stream_.get(), thread_data->thread_id_, use_asset_file_ ? asset_file_stream_.get() : nullptr);
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
     }
 }
