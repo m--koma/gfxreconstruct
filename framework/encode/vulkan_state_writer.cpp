@@ -36,6 +36,9 @@
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
+#include <perfetto.h>
+
+PERFETTO_DEFINE_CATEGORIES(perfetto::Category("GFXR").SetDescription("Events from the graphics subsystem"));
 
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
 #include <android/hardware_buffer.h>
@@ -44,7 +47,8 @@
 GFXRECON_BEGIN_NAMESPACE(gfxrecon)
 GFXRECON_BEGIN_NAMESPACE(encode)
 
-const uint32_t kDefaultQueueFamilyIndex = 0;
+const uint32_t   kDefaultQueueFamilyIndex = 0;
+static const int PERFETTO_TRACK_ID        = 1234561;
 
 static bool IsMemoryCoherent(VkMemoryPropertyFlags property_flags)
 {
@@ -86,9 +90,8 @@ VulkanStateWriter::VulkanStateWriter(util::FileOutputStream*                outp
                                      format::ThreadId                       thread_id,
                                      util::FileOutputStream*                asset_file_stream,
                                      std::unordered_map<uint64_t, int64_t>* asset_file_offsets) :
-    output_stream_(output_stream),
-    compressor_(compressor), thread_id_(thread_id), encoder_(&parameter_stream_), asset_file_stream_(asset_file_stream),
-    asset_file_offsets_(asset_file_offsets)
+    output_stream_(output_stream), compressor_(compressor), thread_id_(thread_id), encoder_(&parameter_stream_),
+    asset_file_stream_(asset_file_stream), asset_file_offsets_(asset_file_offsets)
 {
     assert(output_stream != nullptr || asset_file_stream != nullptr);
 }
@@ -107,61 +110,88 @@ uint64_t VulkanStateWriter::WriteAssets(const VulkanStateTable& state_table)
 
 uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint64_t frame_number)
 {
+    TRACE_EVENT_BEGIN("GFXR", "VulkanStateWriter::WriteState", perfetto::Track(PERFETTO_TRACK_ID));
     // clang-format off
     blocks_written_ = 0;
 
     auto started = std::chrono::high_resolution_clock::now();
 
+    TRACE_EVENT_BEGIN("GFXR", "write format::Marker", perfetto::Track(PERFETTO_TRACK_ID));
     format::Marker marker;
     marker.header.size = sizeof(marker.marker_type) + sizeof(marker.frame_number);
     marker.header.type = format::kStateMarkerBlock;
     marker.marker_type = format::kBeginMarker;
     marker.frame_number = frame_number;
     output_stream_->Write(&marker, sizeof(marker));
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
     // For the Begin Marker meta command
     ++blocks_written_;
 
+    TRACE_EVENT_BEGIN("GFXR", "Instance, device, and queue creation.", perfetto::Track(PERFETTO_TRACK_ID));
     // Instance, device, and queue creation.
     StandardCreateWrite<vulkan_wrappers::InstanceWrapper>(state_table);
     WritePhysicalDeviceState(state_table);
     WriteDeviceState(state_table);
     StandardCreateWrite<vulkan_wrappers::QueueWrapper>(state_table);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
+    TRACE_EVENT_BEGIN("GFXR", "Utility object creation.", perfetto::Track(PERFETTO_TRACK_ID));
     // Utility object creation.
     StandardCreateWrite<vulkan_wrappers::DebugReportCallbackEXTWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::DebugUtilsMessengerEXTWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::ValidationCacheEXTWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::DeferredOperationKHRWrapper>(state_table);
     WritePrivateDataSlotState(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Synchronization primitive", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Synchronization primitive creation.
     WriteFenceState(state_table);
     WriteEventState(state_table);
     WriteSemaphoreState(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "WSI object creation", perfetto::Track(PERFETTO_TRACK_ID));
 
     // WSI object creation.
     StandardCreateWrite<vulkan_wrappers::DisplayKHRWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::DisplayModeKHRWrapper>(state_table);
     WriteSurfaceKhrState(state_table);
     WriteSwapchainKhrState(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Resource creation", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Resource creation.
     WriteBufferState(state_table);
     StandardCreateWrite<vulkan_wrappers::ImageWrapper>(state_table);
     WriteDeviceMemoryState(state_table);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "WriteResourceMemoryState", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Bind memory after buffer/image creation and memory allocation. The buffer/image needs to be created before memory
     // allocation for extensions like dedicated allocation that require a valid buffer/image handle at memory allocation.
     WriteResourceMemoryState(state_table, true);
 
-    // Map memory after uploading resource data to buffers and images, which may require mapping resource memory ranges.
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "WriteMappedMemoryState", perfetto::Track(PERFETTO_TRACK_ID));
+   // Map memory after uploading resource data to buffers and images, which may require mapping resource memory ranges.
     WriteMappedMemoryState(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Sampler", perfetto::Track(PERFETTO_TRACK_ID));
 
     WriteBufferViewState(state_table);
     WriteImageViewState(state_table);
     StandardCreateWrite<vulkan_wrappers::SamplerWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::SamplerYcbcrConversionWrapper>(state_table);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Renders", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Render object creation.
     StandardCreateWrite<vulkan_wrappers::RenderPassWrapper>(state_table);
@@ -175,6 +205,9 @@ uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint
     WriteTlasToBlasDependenciesMetadata(state_table);
     StandardCreateWrite<vulkan_wrappers::AccelerationStructureNVWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::ShaderEXTWrapper>(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Descriptors", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Descriptor creation.
     StandardCreateWrite<vulkan_wrappers::DescriptorPoolWrapper>(state_table);
@@ -187,6 +220,9 @@ uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint
     {
         WriteDescriptorSetState(state_table);
     }
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Query, mic and video", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Query object creation.
     WriteQueryPoolState(state_table);
@@ -196,6 +232,9 @@ uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint
     StandardCreateWrite<vulkan_wrappers::OpticalFlowSessionNVWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::VideoSessionKHRWrapper>(state_table);
     StandardCreateWrite<vulkan_wrappers::VideoSessionParametersKHRWrapper>(state_table);
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Commands and swapchains", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Command creation.
     StandardCreateWrite<vulkan_wrappers::CommandPoolWrapper>(state_table);
@@ -213,6 +252,9 @@ uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint
     {
         asset_file_stream_->Flush();
     }
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+    TRACE_EVENT_BEGIN("GFXR", "Console logs.", perfetto::Track(PERFETTO_TRACK_ID));
 
     // For the EndMarker meta command
     ++blocks_written_;
@@ -223,7 +265,8 @@ uint64_t VulkanStateWriter::WriteState(const VulkanStateTable& state_table, uint
     GFXRECON_WRITE_CONSOLE("%s()", __func__)
     GFXRECON_WRITE_CONSOLE("  saved in %u ms", time);
     GFXRECON_WRITE_CONSOLE("--------------------------------------")
-
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+   TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
     return blocks_written_;
     // clang-format on
 }
@@ -1518,6 +1561,8 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
 
         if (snapshot_entry.need_staging_copy)
         {
+            TRACE_EVENT_BEGIN("GFXR", "ReadFromBufferResource", perfetto::Track(PERFETTO_TRACK_ID));
+
             VkResult result = resource_util.ReadFromBufferResource(
                 buffer_wrapper->handle, buffer_wrapper->size, 0, buffer_wrapper->queue_family_index, data);
 
@@ -1525,9 +1570,12 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
             {
                 bytes = data.data();
             }
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
         else
         {
+            TRACE_EVENT_BEGIN("GFXR", "validate mapped memory", perfetto::Track(PERFETTO_TRACK_ID));
+
             assert((memory_wrapper->mapped_data == nullptr) || (memory_wrapper->mapped_offset == 0));
 
             VkResult result = VK_SUCCESS;
@@ -1557,10 +1605,13 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
                 InvalidateMappedMemoryRange(
                     device_wrapper, memory_wrapper->handle, buffer_wrapper->bind_offset, buffer_wrapper->size);
             }
+            TRACE_EVENT_BEGIN("GFXR", "ReadFromBufferResource", perfetto::Track(PERFETTO_TRACK_ID));
         }
 
         if (bytes != nullptr)
         {
+            TRACE_EVENT_BEGIN("GFXR", "write bytes", perfetto::Track(PERFETTO_TRACK_ID));
+
             GFXRECON_CHECK_CONVERSION_DATA_LOSS(size_t, buffer_wrapper->size);
 
             size_t                          data_size = static_cast<size_t>(buffer_wrapper->size);
@@ -1574,6 +1625,8 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
             upload_cmd.buffer_id = buffer_wrapper->handle_id;
             upload_cmd.data_size = data_size;
 
+            TRACE_EVENT_BEGIN("GFXR", "compress", perfetto::Track(PERFETTO_TRACK_ID));
+
             if (compressor_ != nullptr)
             {
                 size_t compressed_size = compressor_->Compress(data_size, bytes, &compressed_parameter_buffer_, 0);
@@ -1586,6 +1639,7 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
                     data_size = compressed_size;
                 }
             }
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
             // Calculate size of packet with compressed or uncompressed data size.
             upload_cmd.meta_header.block_header.size = format::GetMetaDataBlockBaseSize(upload_cmd) + data_size;
@@ -1598,6 +1652,7 @@ void VulkanStateWriter::ProcessBufferMemory(const vulkan_wrappers::DeviceWrapper
             {
                 device_table->UnmapMemory(device_wrapper->handle, memory_wrapper->handle);
             }
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
         else
         {
@@ -1761,6 +1816,7 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
 
         if (snapshot_entry.need_staging_copy)
         {
+            TRACE_EVENT_BEGIN("GFXR", "ReadFromImageResourceStaging", perfetto::Track(PERFETTO_TRACK_ID));
             std::vector<uint64_t> subresource_offsets;
             std::vector<uint64_t> subresource_sizes;
             bool                  scaling_supported;
@@ -1786,9 +1842,12 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
             {
                 bytes = data.data();
             }
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
         else if (!image_wrapper->is_swapchain_image)
         {
+            TRACE_EVENT_BEGIN("GFXR", "validate mapped mem data", perfetto::Track(PERFETTO_TRACK_ID));
+
             assert((memory_wrapper != nullptr) &&
                    ((memory_wrapper->mapped_data == nullptr) || (memory_wrapper->mapped_offset == 0)));
 
@@ -1819,6 +1878,7 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
                 InvalidateMappedMemoryRange(
                     device_wrapper, memory_wrapper->handle, image_wrapper->bind_offset, snapshot_entry.resource_size);
             }
+            TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
         }
 
         if (!image_wrapper->is_swapchain_image)
@@ -1840,11 +1900,15 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
             {
                 GFXRECON_CHECK_CONVERSION_DATA_LOSS(size_t, snapshot_entry.resource_size);
 
+                TRACE_EVENT_BEGIN("GFXR", "write bytes", perfetto::Track(PERFETTO_TRACK_ID));
+
                 size_t data_size = static_cast<size_t>(snapshot_entry.resource_size);
 
                 // Store uncompressed data size in packet.
                 upload_cmd.data_size   = data_size;
                 upload_cmd.level_count = image_wrapper->mip_levels;
+
+                TRACE_EVENT_BEGIN("GFXR", "compress", perfetto::Track(PERFETTO_TRACK_ID));
 
                 if (compressor_ != nullptr)
                 {
@@ -1858,6 +1922,9 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
                         data_size = compressed_size;
                     }
                 }
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+                TRACE_EVENT_BEGIN("GFXR", "calculate size", perfetto::Track(PERFETTO_TRACK_ID));
 
                 // Calculate size of packet with compressed or uncompressed data size.
                 assert(!snapshot_entry.level_sizes.empty() &&
@@ -1866,14 +1933,23 @@ void VulkanStateWriter::ProcessImageMemory(const vulkan_wrappers::DeviceWrapper*
 
                 upload_cmd.meta_header.block_header.size += levels_size + data_size;
 
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+
+                TRACE_EVENT_BEGIN("GFXR", "write cmd", perfetto::Track(PERFETTO_TRACK_ID));
                 output_stream_->Write(&upload_cmd, sizeof(upload_cmd));
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+                TRACE_EVENT_BEGIN("GFXR", "write snapshot", perfetto::Track(PERFETTO_TRACK_ID));
                 output_stream_->Write(snapshot_entry.level_sizes.data(), levels_size);
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+                TRACE_EVENT_BEGIN("GFXR", "write bytes", perfetto::Track(PERFETTO_TRACK_ID));
                 output_stream_->Write(bytes, data_size);
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
                 if (!snapshot_entry.need_staging_copy && memory_wrapper->mapped_data == nullptr)
                 {
                     device_table->UnmapMemory(device_wrapper->handle, memory_wrapper->handle);
                 }
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
             }
             else
             {
@@ -2362,10 +2438,14 @@ void VulkanStateWriter::WriteResourceMemoryState(const VulkanStateTable& state_t
 
     auto started = std::chrono::high_resolution_clock::now();
 
+    TRACE_EVENT_BEGIN("GFXR", "Write buffers", perfetto::Track(PERFETTO_TRACK_ID));
+
     WriteBufferMemoryState(state_table, &resources, &max_resource_size, &max_staging_copy_size, write_memory_state);
     WriteImageMemoryState(state_table, &resources, &max_resource_size, &max_staging_copy_size, write_memory_state);
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
     // Write resource memory content.
+    TRACE_EVENT_BEGIN("GFXR", "Write resource memory content.", perfetto::Track(PERFETTO_TRACK_ID));
     for (const auto& resource_entry : resources)
     {
         const vulkan_wrappers::DeviceWrapper* device_wrapper = resource_entry.first;
@@ -2388,6 +2468,7 @@ void VulkanStateWriter::WriteResourceMemoryState(const VulkanStateTable& state_t
         {
             if (output_stream_ != nullptr)
             {
+                TRACE_EVENT_BEGIN("GFXR", "Write block", perfetto::Track(PERFETTO_TRACK_ID));
                 format::BeginResourceInitCommand begin_cmd;
                 begin_cmd.meta_header.block_header.size = format::GetMetaDataBlockBaseSize(begin_cmd);
                 begin_cmd.meta_header.block_header.type = format::kMetaDataBlock;
@@ -2400,24 +2481,35 @@ void VulkanStateWriter::WriteResourceMemoryState(const VulkanStateTable& state_t
 
                 output_stream_->Write(&begin_cmd, sizeof(begin_cmd));
                 ++blocks_written_;
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
             }
 
             for (const auto& queue_family_entry : resource_entry.second)
             {
                 if (asset_file_stream_ != nullptr)
                 {
+                    TRACE_EVENT_BEGIN("GFXR", "Asset file", perfetto::Track(PERFETTO_TRACK_ID));
                     ProcessBufferMemoryWithAssetFile(device_wrapper, queue_family_entry.second.buffers, resource_util);
                     ProcessImageMemoryWithAssetFile(device_wrapper, queue_family_entry.second.images, resource_util);
+                    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
                 }
                 else
                 {
+                    TRACE_EVENT_BEGIN("GFXR", "No asset file", perfetto::Track(PERFETTO_TRACK_ID));
+                    TRACE_EVENT_BEGIN("GFXR", "ProcessBufferMemory", perfetto::Track(PERFETTO_TRACK_ID));
                     ProcessBufferMemory(device_wrapper, queue_family_entry.second.buffers, resource_util);
+                    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+                    TRACE_EVENT_BEGIN("GFXR", "ProcessImageMemory", perfetto::Track(PERFETTO_TRACK_ID));
                     ProcessImageMemory(device_wrapper, queue_family_entry.second.images, resource_util);
+                    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
+                    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
                 }
             }
 
             if (output_stream_ != nullptr)
             {
+                TRACE_EVENT_BEGIN("GFXR", "Write end command", perfetto::Track(PERFETTO_TRACK_ID));
+
                 format::EndResourceInitCommand end_cmd;
                 end_cmd.meta_header.block_header.size = format::GetMetaDataBlockBaseSize(end_cmd);
                 end_cmd.meta_header.block_header.type = format::kMetaDataBlock;
@@ -2428,6 +2520,7 @@ void VulkanStateWriter::WriteResourceMemoryState(const VulkanStateTable& state_t
 
                 output_stream_->Write(&end_cmd, sizeof(end_cmd));
                 ++blocks_written_;
+                TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
             }
         }
         else
@@ -2435,6 +2528,7 @@ void VulkanStateWriter::WriteResourceMemoryState(const VulkanStateTable& state_t
             GFXRECON_LOG_ERROR("Failed to create a staging buffer to process trim state");
         }
     }
+    TRACE_EVENT_END("GFXR", perfetto::Track(PERFETTO_TRACK_ID));
 
     auto     done = std::chrono::high_resolution_clock::now();
     uint32_t time = std::chrono::duration_cast<std::chrono::milliseconds>(done - started).count();

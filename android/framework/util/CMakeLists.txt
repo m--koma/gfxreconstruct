@@ -1,5 +1,7 @@
 add_library(gfxrecon_util STATIC "")
 
+add_library(perfetto STATIC ${CMAKE_CURRENT_LIST_DIR}/../../../../perfetto/sdk/perfetto.cc)
+
 target_sources(gfxrecon_util
                PRIVATE
                    ${GFXRECON_SOURCE_DIR}/framework/util/argument_parser.h
@@ -66,7 +68,8 @@ target_include_directories(gfxrecon_util
                                ${GFXRECON_SOURCE_DIR}/external/precompiled/android/include
                                ${GFXRECON_SOURCE_DIR}/external/stb
                                ${GFXRECON_SOURCE_DIR}/external/nlohmann/include
-                               ${GFXRECON_SOURCE_DIR}/framework)
+                               ${GFXRECON_SOURCE_DIR}/framework
+                               ${CMAKE_CURRENT_LIST_DIR}/../../../../perfetto/sdk)
 
 target_link_libraries(gfxrecon_util
                           platform_specific
@@ -75,4 +78,5 @@ target_link_libraries(gfxrecon_util
                           spirv-reflect-static
                           ${GFXRECON_SOURCE_DIR}/external/precompiled/android/lib/${ANDROID_ABI}/liblz4_static.a
                           ${GFXRECON_SOURCE_DIR}/external/precompiled/android/lib/${ANDROID_ABI}/libzstd.a
-                          z)
+                          z
+                          perfetto)
